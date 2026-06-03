@@ -129,7 +129,8 @@ input[type=date]{background:#0a1626;border:1px solid #1e3a5f;border-radius:7px;p
       </div>
       <div style="display:flex;gap:18px;margin-top:14px;flex-wrap:wrap">
         <div><div id="ax_impressions" style="font-size:24px;font-weight:900;color:#38bdf8;letter-spacing:-1px">—</div><div style="font-size:10px;color:#64748b">Impressions</div></div>
-        <div><div id="ax_acq_leads" style="font-size:24px;font-weight:900;color:#e2e8f0;letter-spacing:-1px">—</div><div style="font-size:10px;color:#64748b">Leads générés</div></div>
+        <div><div id="ax_acq_leads" style="font-size:24px;font-weight:900;color:#e2e8f0;letter-spacing:-1px">—</div><div style="font-size:10px;color:#64748b">Leads (conv.)</div></div>
+        <div><div id="ax_acq_hot" style="font-size:24px;font-weight:900;color:#f472b6;letter-spacing:-1px">—</div><div style="font-size:10px;color:#64748b">Leads chauds</div></div>
       </div>
       <div style="margin-top:10px;font-size:10px;color:#334155">▸ détail par jour · par post · par canal</div>
     </div>
@@ -193,12 +194,27 @@ let charts = {}; // instances Chart.js par id pour destroy propre
 
 // ─── ÉTAT DES FILTRES ───────────────────────────────────────────────────
 const LS_KEY = 'alphaMotors.filters.v1';
+
+// ════════════════════════════════════════════════════════════════════════
+//  COMPTES EXCLUS PAR DÉFAUT (super users, automations, bots)
+//  Leurs données ne comptent JAMAIS et ils n'apparaissent PAS dans les chips.
+//  Mets ici les user_id (nombres) OU les noms exacts tels qu'ils sortent d'Odoo.
+//  Ex : [2, 1, "OdooBot", "Administrator", "Automation"]
+// ════════════════════════════════════════════════════════════════════════
+const SYSTEM_EXCLUDED = [
+  "OdooBot", "Administrator", "Administrateur", 79, 21, 34, 79, 21, 9, 0
+  // 1, 2,            // ← décommente/ajoute les user_id à exclure
+  // "Mitchell Admin"
+].map(String);
+const isSystemAccount = (key, nom) =>
+  SYSTEM_EXCLUDED.includes(String(key)) || SYSTEM_EXCLUDED.includes(String(nom||''));
+
 let FILTERS = {
   preset: 'today',        // today | 7d | 30d | custom
   from: null, to: null,   // bornes ISO yyyy-mm-dd (calculées ou custom)
-  excludedAgents: []      // ids/noms d'agents décochés (favori persistant)
+  excludedAgents: []      // ids/noms d'agents décochés (favori persistant, ajustable)
 };
-let ALL_AGENTS = [];      // liste {key, nom} découverte dans les données
+let ALL_AGENTS = [];      // liste {key, nom} découverte (hors comptes système)
 
 const fmt = n => new Intl.NumberFormat('fr-FR').format(Math.round(n||0));
 const pct = (a,b) => (!b||b===0) ? 0 : Math.round(a/b*100);
@@ -257,7 +273,9 @@ function onCustomDate(){
 }
 
 // ─── CONTRÔLES AGENTS ───────────────────────────────────────────────────
-function isAgentOn(key){ return !FILTERS.excludedAgents.includes(key); }
+function isAgentOn(key){ return !FILTERS.excludedAgents.includes(String(key)); }
+// vrai si la cellule doit compter : ni compte système, ni agent décoché
+function counts(key, nom){ return !isSystemAccount(key, nom) && isAgentOn(key); }
 function toggleAgent(key){
   const i=FILTERS.excludedAgents.indexOf(key);
   if(i>=0) FILTERS.excludedAgents.splice(i,1); else FILTERS.excludedAgents.push(key);
@@ -296,7 +314,7 @@ function applyFilters(){
     evts.forEach(e=>{
       const dk=e.date; const aKey=String(e.user_id ?? e.agent ?? e.nom ?? '?');
       if(!inRange(dk)) return;
-      if(!isAgentOn(aKey)) return;
+      if(!counts(aKey, e.nom)) return;
       // volume
       V.appels        += e.appels||0;
       V.appels_video  += e.appels_video||0;
@@ -344,7 +362,7 @@ function applyFilters(){
       C2.par_jour = C2.par_jour.filter(d=>inRange(d.date));
     }
     if(Array.isArray(C2.par_agent)){
-      C2.par_agent = C2.par_agent.filter(a=>isAgentOn(agentKey(a)));
+      C2.par_agent = C2.par_agent.filter(a=>counts(agentKey(a), a.nom));
       // recomposer le volume depuis les agents filtrés (si dates non discriminantes)
       const V={appels:0,appels_video:0,rdv_pris:0,rdv_video_pris:0,visites:0,test_drives:0,no_shows:0};
       C2.par_agent.forEach(a=>{ V.appels+=a.appels||0; V.rdv_pris+=a.rdv||0; V.visites+=a.visites||0; V.no_shows+=a.no_shows||0; });
@@ -352,16 +370,26 @@ function applyFilters(){
       C2.volume = Object.assign({}, C2.volume, V);
     }
   }
-  // Acquisition & commercial : filtrage par date sur les séries jour si présentes
-  if(VIEW.acquisition && Array.isArray(VIEW.acquisition.par_jour)){
-    const f=VIEW.acquisition.par_jour.filter(d=>inRange(d.date));
-    if(f.length){
-      VIEW.acquisition.par_jour=f;
-      VIEW.acquisition.impressions_total=f.reduce((s,d)=>s+(d.impressions||0),0);
-      VIEW.acquisition.clics_total=f.reduce((s,d)=>s+(d.clics||0),0);
-      VIEW.acquisition.likes_total=f.reduce((s,d)=>s+(d.likes||0),0);
-      VIEW.acquisition.leads_generes=f.reduce((s,d)=>s+(d.leads||0),0);
+  // ─── ACQUISITION : filtrage par DATE (toujours recalculé, vide = 0) ───
+  if(VIEW.acquisition && Array.isArray(DATA.acquisition.par_jour)){
+    const f=DATA.acquisition.par_jour.filter(d=>inRange(d.date));
+    const A=VIEW.acquisition;
+    A.par_jour=f;
+    A.impressions_total=f.reduce((s,d)=>s+(d.impressions||0),0);
+    A.reach_total=f.reduce((s,d)=>s+(d.reach||0),0);
+    A.clics_total=f.reduce((s,d)=>s+(d.clics||0),0);
+    A.likes_total=f.reduce((s,d)=>s+(d.likes||0),0);
+    A.leads_generes=f.reduce((s,d)=>s+(d.leads||0),0);
+    A.hot_leads=f.reduce((s,d)=>s+(d.hot||0),0);
+    A.hot_rate=A.leads_generes ? Math.round(A.hot_leads/A.leads_generes*100) : 0;
+    // CA pub & coût/lead recalculés si dispo
+    if(DATA.acquisition.spend_total!=null){
+      // proportion de spend sur la période filtrée n'est pas dans par_jour → on garde le ratio global
+      A.cout_par_lead = A.leads_generes ? Math.round((DATA.acquisition.spend_total||0) * (A.impressions_total/(DATA.acquisition.impressions_total||1)) / A.leads_generes) : 0;
     }
+    // par_post : pas de granularité jour → on neutralise si la période exclut tout Meta
+    A.par_post = f.length ? DATA.acquisition.par_post : [];
+    A.par_canal = f.length ? DATA.acquisition.par_canal : [];
   }
   // ─── COMMERCIAL : granularité croisée si dispo, sinon evolution par date ───
   const Msrc = DATA.commercial || {};
@@ -373,7 +401,7 @@ function applyFilters(){
     cEvts.forEach(e=>{
       const dk=e.date; const aKey=String(e.user_id ?? e.vendeur ?? e.nom ?? '?');
       if(!inRange(dk)) return;
-      if(!isAgentOn(aKey)) return;
+      if(!counts(aKey, e.nom)) return;
       prospects += e.prospects||0;
       proformas += e.proformas||0;
       gagnes    += e.gagne||e.ventes||0;
@@ -438,7 +466,10 @@ function discoverAgents(){
   // vendeurs commerciaux (granularité croisée commerciale si présente)
   const M=DATA.commercial||{};
   (M.evenements||M.events||[]).forEach(e=>{ const k=String(e.user_id??e.nom??'?'); if(!set.has(k)) set.set(k, e.nom||('User '+k)); });
-  ALL_AGENTS = [...set].map(([key,nom])=>({key,nom})).sort((a,b)=>a.nom.localeCompare(b.nom));
+  ALL_AGENTS = [...set]
+    .filter(([key,nom]) => !isSystemAccount(key, nom))   // jamais les super users / bots
+    .map(([key,nom])=>({key,nom}))
+    .sort((a,b)=>a.nom.localeCompare(b.nom));
 }
 
 // ─── CHARGEMENT DEPUIS JSONBIN ──────────────────────────────────────────
@@ -522,7 +553,9 @@ function renderAll(){
   const A=VIEW.acquisition, C=VIEW.call_center, M=VIEW.commercial;
 
   document.getElementById('ax_impressions').textContent = fmt(A.impressions_total);
-  document.getElementById('ax_acq_leads').textContent   = fmt(A.leads_generes);
+  const metaPresent = (DATA.acquisition && (DATA.acquisition.impressions_total>0 || (DATA.acquisition.par_jour||[]).length>0));
+  document.getElementById('ax_acq_leads').textContent   = fmt(metaPresent ? (A.leads_generes||0) : (C.leads_recus||0));
+  document.getElementById('ax_acq_hot').textContent     = fmt(A.hot_leads||0);
   document.getElementById('ax_cc_appels').textContent   = fmt((C.volume||{}).appels);
   document.getElementById('ax_cc_rdv').textContent      = fmt((C.volume||{}).rdv_pris);
   document.getElementById('ax_com_clients').textContent = fmt(M.clients_gagnes);
@@ -537,7 +570,8 @@ function renderAll(){
 function renderFunnel(){
   const A=VIEW.acquisition, C=VIEW.call_center, M=VIEW.commercial;
   const V=C.volume||{};
-  const leads = A.leads_generes || C.leads_recus || 0;  // fallback si Meta vide
+  const metaPresent = (DATA.acquisition && (DATA.acquisition.impressions_total>0 || (DATA.acquisition.par_jour||[]).length>0));
+  const leads = metaPresent ? (A.leads_generes||0) : (C.leads_recus||0);
   const labels = ['Impressions','Clics','Leads','Appels','RDV pris','Visites','Clients'];
   const vals = [A.impressions_total||0, A.clics_total||0, leads,
                 V.appels||0, V.rdv_pris||0, (M.visites||V.visites||0), M.clients_gagnes||0];
@@ -608,7 +642,9 @@ function detailAcq(){
     ${miniKpi(fmt(A.reach_total),'Portée (uniques)','#60a5fa')}
     ${miniKpi(fmt(A.likes_total),'Likes / réactions','#818cf8')}
     ${miniKpi(fmt(A.clics_total),'Clics · CTR '+ctr,'#a78bfa')}
-    ${miniKpi(fmt(A.leads_generes),'Leads générés','#4ade80')}
+    ${miniKpi(fmt(A.leads_generes),'Leads (conversations)','#4ade80')}
+    ${miniKpi(fmt(A.hot_leads||0),'Leads chauds (2e msg)','#f472b6')}
+    ${miniKpi((A.hot_rate||0)+'%','Taux chaud','#fb923c')}
     ${miniKpi(A.cout_par_lead?fmt(A.cout_par_lead)+' F':'—','Coût / lead','#f59e0b')}
   </div>
   <div style="display:grid;grid-template-columns:3fr 2fr;gap:16px;margin-bottom:16px">
@@ -636,7 +672,8 @@ function drawAcqCharts(){
     labels:days.map(d=>d.date),
     datasets:[
       {label:'Impressions',data:days.map(d=>d.impressions),borderColor:'#38bdf8',backgroundColor:'#38bdf820',tension:.4,yAxisID:'y',pointRadius:2},
-      {label:'Leads',data:days.map(d=>d.leads),borderColor:'#4ade80',backgroundColor:'#4ade8020',tension:.4,yAxisID:'y1',pointRadius:2}
+      {label:'Leads',data:days.map(d=>d.leads),borderColor:'#4ade80',backgroundColor:'#4ade8020',tension:.4,yAxisID:'y1',pointRadius:2},
+      {label:'Leads chauds',data:days.map(d=>d.hot||0),borderColor:'#f472b6',backgroundColor:'#f472b620',tension:.4,yAxisID:'y1',pointRadius:2,borderDash:[4,3]}
     ]
   },{
     plugins:{legend:{labels:{color:'#64748b',font:{size:11}}}},
