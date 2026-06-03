@@ -556,7 +556,7 @@ function renderAll(){
   const metaPresent = (DATA.acquisition && (DATA.acquisition.impressions_total>0 || (DATA.acquisition.par_jour||[]).length>0));
   document.getElementById('ax_acq_leads').textContent   = fmt(metaPresent ? (A.leads_generes||0) : (C.leads_recus||0));
   document.getElementById('ax_acq_hot').textContent     = fmt(A.hot_leads||0);
-  document.getElementById('ax_cc_appels').textContent   = fmt((C.volume||{}).appels);
+  // document.getElementById('ax_cc_appels').textContent   = fmt((C.volume||{}).appels);
   document.getElementById('ax_cc_rdv').textContent      = fmt((C.volume||{}).rdv_pris);
   document.getElementById('ax_com_clients').textContent = fmt(M.clients_gagnes);
   document.getElementById('ax_com_ca').textContent      = M.ca_genere ? fmt(M.ca_genere)+' F' : '—';
